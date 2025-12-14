@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    host: true
+    host: true,
+    allowedHosts: ['unparking-unsubtracted-ivy.ngrok-free.dev', '*.ngrok-free.dev']
   }
 })
