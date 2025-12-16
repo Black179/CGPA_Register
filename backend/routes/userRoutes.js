@@ -28,4 +28,15 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Delete user by register number
+router.delete('/:registerNo', async (req, res) => {
+  try {
+    const user = await User.findOneAndDelete({ registerNo: req.params.registerNo.toUpperCase() });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    res.json({ message: 'User deleted successfully', user });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
 module.exports = router;

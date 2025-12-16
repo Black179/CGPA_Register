@@ -349,6 +349,90 @@ app.post('/api/admin/test-data', (req, res) => {
   }
 });
 
+// Delete student by register number
+app.delete('/api/admin/students/:registerNo', (req, res) => {
+  try {
+    const { registerNo } = req.params;
+    console.log('Attempting to delete student with registerNo:', registerNo);
+    
+    // First check if student exists
+    db.get(`SELECT * FROM students WHERE registerNo = ?`, [registerNo], (err, student) => {
+      if (err) {
+        console.error('Error checking student existence:', err.message);
+        return res.status(500).json({ error: 'Failed to check student existence' });
+      }
+      
+      if (!student) {
+        console.log('Student not found:', registerNo);
+        return res.status(404).json({ error: 'Student not found' });
+      }
+      
+      console.log('Found student to delete:', student);
+      
+      // Delete subjects for this student (cascade through semesters)
+      db.all(`SELECT id FROM semesters WHERE studentId = ?`, [student.id], (err, semesters) => {
+        if (err) {
+          console.error('Error fetching semesters for deletion:', err.message);
+          return res.status(500).json({ error: 'Failed to fetch semesters for deletion' });
+        }
+        
+        let deletedSemesters = 0;
+        const totalSemesters = semesters.length;
+        
+        if (totalSemesters === 0) {
+          // No semesters to delete, just delete the student
+          db.run(`DELETE FROM students WHERE registerNo = ?`, [registerNo], (err) => {
+            if (err) {
+              console.error('Error deleting student:', err.message);
+              return res.status(500).json({ error: 'Failed to delete student' });
+            }
+            
+            console.log('Student deleted successfully:', registerNo);
+            res.json({ message: 'Student deleted successfully', student });
+          });
+          return;
+        }
+        
+        // Delete subjects for each semester
+        semesters.forEach((semester) => {
+          db.run(`DELETE FROM subjects WHERE semesterId = ?`, [semester.id], (err) => {
+            if (err) {
+              console.error('Error deleting subjects for semester:', semester.id, err.message);
+              return;
+            }
+            
+            // Delete the semester
+            db.run(`DELETE FROM semesters WHERE id = ?`, [semester.id], (err) => {
+              if (err) {
+                console.error('Error deleting semester:', semester.id, err.message);
+                return;
+              }
+              
+              deletedSemesters++;
+              
+              if (deletedSemesters === totalSemesters) {
+                // All semesters and subjects deleted, now delete the student
+                db.run(`DELETE FROM students WHERE registerNo = ?`, [registerNo], (err) => {
+                  if (err) {
+                    console.error('Error deleting student:', err.message);
+                    return res.status(500).json({ error: 'Failed to delete student' });
+                  }
+                  
+                  console.log('Student and all related data deleted successfully:', registerNo);
+                  res.json({ message: 'Student deleted successfully', student });
+                });
+              }
+            });
+          });
+        });
+      });
+    });
+  } catch (error) {
+    console.error('Error in delete endpoint:', error);
+    res.status(500).json({ error: 'Failed to delete student: ' + error.message });
+  }
+});
+
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log('Server running on port ' + PORT);

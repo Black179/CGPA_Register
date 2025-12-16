@@ -1,13 +1,57 @@
 import { useState, useEffect } from 'react';
-import { Box, Heading, Table, Thead, Tbody, Tr, Th, Td, VStack, Text, Button, useToast, HStack } from '@chakra-ui/react';
+import React from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Box, Heading, Table, Thead, Tbody, Tr, Th, Td, VStack, Text, Button, useToast, HStack, useBreakpointValue } from '@chakra-ui/react';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
+
+// Add global styles to disable body scrolling
+const globalStyles = `
+  html, body {
+    overflow: hidden;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+  #root {
+    height: 100vh;
+    overflow: hidden;
+  }
+`;
 
 const AdminDashboard = () => {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const toast = useToast();
+  const navigate = useNavigate();
+
+  // Inject global styles to disable body scrolling
+  useEffect(() => {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = globalStyles;
+    document.head.appendChild(styleElement);
+    
+    return () => {
+      document.head.removeChild(styleElement);
+    };
+  }, []);
+
+  // Responsive values
+  const headingSize = useBreakpointValue({ base: 'xl', md: '2xl' });
+  const buttonSize = useBreakpointValue({ base: 'sm', md: 'md' });
+  const padding = useBreakpointValue({ base: 4, md: 6 });
+
+  const handleLogout = () => {
+    toast({
+      title: 'Logged Out',
+      description: 'You have been successfully logged out',
+      status: 'success',
+      duration: 2000,
+      isClosable: true,
+    });
+    navigate('/');
+  };
 
   useEffect(() => {
     fetchStudents();
@@ -17,18 +61,49 @@ const AdminDashboard = () => {
     try {
       setLoading(true);
       console.log('Fetching students from API...');
-      const response = await fetch('http://localhost:5000/api/admin/students');
+      
+      // Use dynamic API endpoint for mobile compatibility
+      const apiEndpoint = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000/api/admin/students'
+        : `${window.location.protocol}//${window.location.hostname}:5000/api/admin/students`;
+      
+      console.log('Using API endpoint:', apiEndpoint);
+      
+      const response = await fetch(apiEndpoint);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data = await response.json();
       console.log('Received data:', data);
       setStudents(data);
       console.log('Students set:', data.length);
+      
+      // Show success message for debugging
+      if (data.length === 0) {
+        toast({
+          title: 'No Data Found',
+          description: 'No student records found in the database. Try adding test data.',
+          status: 'info',
+          duration: 5000,
+          isClosable: true,
+        });
+      }
     } catch (error) {
       console.error('Error fetching students:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+        hostname: window.location.hostname,
+        userAgent: navigator.userAgent
+      });
+      
       toast({
-        title: 'Error',
-        description: 'Failed to fetch student data',
+        title: 'Connection Error',
+        description: `Failed to fetch student data: ${error.message}. Check if server is running.`,
         status: 'error',
-        duration: 3000,
+        duration: 5000,
         isClosable: true,
       });
     } finally {
@@ -38,29 +113,46 @@ const AdminDashboard = () => {
 
   const calculateStats = () => {
     const totalStudents = students.length;
-    const totalSemesters = students.reduce((sum, student) => sum + (student?.semesters?.length || 0), 0);
-    const avgCGPA = students.length > 0 
-      ? (students.reduce((sum, student) => {
-          if (!student?.semesters || student.semesters.length === 0) return sum;
-          const totalCredits = student.semesters.reduce((creditSum, sem) => 
-            creditSum + (sem.subjects?.reduce((subjectSum, subject) => subjectSum + subject.credits, 0) || 0), 0);
-          const weightedSum = student.semesters.reduce((weightSum, sem) => 
-            weightSum + (sem.sgpa * totalCredits), 0);
-          return sum + (totalCredits > 0 ? weightedSum / totalCredits : 0);
-        }, 0) / students.length)
-      : 0;
+    
+    // Calculate Number of Arrear Having Students
+    const arrearHavingStudents = students.filter(student => {
+      if (!student?.semesters || student.semesters.length === 0) return false;
+      return student.semesters.some(semester => {
+        if (!semester.subjects) return false;
+        return semester.subjects.some(subject => subject.gradePoint < 5);
+      });
+    }).length;
+    
+    // Calculate Highest CGPA
+    const studentCGPAs = students.map(student => {
+      if (!student?.semesters || student.semesters.length === 0) return 0;
+      const allSubjects = student.semesters.flatMap(sem => sem.subjects || []);
+      const totalCredits = allSubjects.reduce((sum, subject) => sum + subject.credits, 0);
+      const weightedSum = allSubjects.reduce((sum, subject) => sum + (subject.gradePoint * subject.credits), 0);
+      return totalCredits > 0 ? weightedSum / totalCredits : 0;
+    }).filter(cgpa => cgpa > 0);
+    
+    const highestCGPA = studentCGPAs.length > 0 ? Math.max(...studentCGPAs) : 0;
 
-    return { totalStudents, totalSemesters, avgCGPA };
+    return { totalStudents, arrearHavingStudents, highestCGPA };
+  };
+
+  // Function to get the maximum number of semesters across all students
+  const getMaxSemesters = () => {
+    return students.reduce((max, student) => {
+      const semCount = student?.semesters?.length || 0;
+      return Math.max(max, semCount);
+    }, 0);
   };
 
   // Function to process student data for semester-wise display
   const getStudentSemesterData = () => {
     const studentData = [];
+    const maxSemesters = getMaxSemesters();
     
     students.filter(student => student !== null).forEach((student, index) => {
       const semesters = student?.semesters || [];
-      const sem1Data = semesters.find(sem => sem.semesterNo === 1) || {};
-      const sem2Data = semesters.find(sem => sem.semesterNo === 2) || {};
+      const semesterData = {};
       
       // Calculate arrears (grades below 'C' or gradePoint < 5)
       const calculateArrears = (subjects) => {
@@ -69,44 +161,41 @@ const AdminDashboard = () => {
         return { count: arrears.length, total: arrears.length };
       };
       
-      // Calculate totals
+      // Calculate totals (sum of credit × gradePoint products)
       const calculateTotal = (subjects) => {
         if (!subjects) return 0;
-        return subjects.reduce((sum, subject) => sum + subject.credits, 0);
+        return subjects.reduce((sum, subject) => sum + (subject.credits * subject.gradePoint), 0);
       };
       
-      const sem1Arrears = calculateArrears(sem1Data.subjects);
-      const sem2Arrears = calculateArrears(sem2Data.subjects);
-      const sem1Total = calculateTotal(sem1Data.subjects);
-      const sem2Total = calculateTotal(sem2Data.subjects);
+      // Process each semester dynamically
+      for (let semNum = 1; semNum <= maxSemesters; semNum++) {
+        const semData = semesters.find(sem => sem.semesterNo === semNum) || {};
+        const arrears = calculateArrears(semData.subjects);
+        const total = calculateTotal(semData.subjects);
+        
+        semesterData[`sem${semNum}`] = {
+          credit: total || 0,
+          arrearsCount: arrears.count,
+          arrearsTotal: arrears.total,
+          total: total,
+          sgpa: semData.sgpa || 0
+        };
+      }
       
-      // Calculate overall CGPA up to 2nd sem
-      const allSubjects = [...(sem1Data.subjects || []), ...(sem2Data.subjects || [])];
+      // Calculate overall CGPA across all semesters using credit × gradePoint products
+      const allSubjects = semesters.flatMap(sem => sem.subjects || []);
       const totalCredits = allSubjects.reduce((sum, subject) => sum + subject.credits, 0);
       const weightedSum = allSubjects.reduce((sum, subject) => sum + (subject.gradePoint * subject.credits), 0);
       const overallCGPA = totalCredits > 0 ? weightedSum / totalCredits : 0;
-      const overallTotal = sem1Total + sem2Total;
-      const overallArrears = sem1Arrears.count + sem2Arrears.count;
+      const overallTotal = Object.values(semesterData).reduce((sum, sem) => sum + sem.total, 0);
+      const overallArrears = Object.values(semesterData).reduce((sum, sem) => sum + sem.arrearsCount, 0);
       
       studentData.push({
         sno: index + 1,
         section: student?.section || 'N/A',
         registerNo: student?.registerNo || 'N/A',
         name: student?.name || 'N/A',
-        sem1: {
-          credit: 23,
-          arrearsCount: sem1Arrears.count,
-          arrearsTotal: sem1Arrears.total,
-          total: sem1Total,
-          sgpa: sem1Data.sgpa || 0
-        },
-        sem2: {
-          credit: 24.5,
-          arrearsCount: sem2Arrears.count,
-          arrearsTotal: sem2Arrears.total,
-          total: sem2Total,
-          sgpa: sem2Data.sgpa || 0
-        },
+        ...semesterData,
         overall: {
           cgpa: overallCGPA,
           total: overallTotal,
@@ -120,7 +209,14 @@ const AdminDashboard = () => {
 
   const addTestData = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/admin/test-data', {
+      // Use dynamic API endpoint for mobile compatibility
+      const apiEndpoint = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000/api/admin/test-data'
+        : `${window.location.protocol}//${window.location.hostname}:5000/api/admin/test-data`;
+      
+      console.log('Adding test data using endpoint:', apiEndpoint);
+      
+      const response = await fetch(apiEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -159,28 +255,58 @@ const AdminDashboard = () => {
   };
 
   const studentData = getStudentSemesterData();
+  const maxSemesters = getMaxSemesters();
 
   // Export to Excel function
   const exportToExcel = async () => {
     try {
-      const ws = XLSX.utils.json_to_sheet(studentData.map(student => ({
-        'S.No': student.sno,
-        'SECTION': student.section,
-        'REG NO': student.registerNo,
-        'NAME': student.name,
-        'SEM 1 - ARREAR COUNT': student.sem1.arrearsCount,
-        'SEM 1 - TOTAL ARREAR': student.sem1.arrearsTotal,
-        'SEM 1 - TOT': student.sem1.total,
-        'SEM 1 - SGPA': student.sem1.sgpa,
-        'SEM 2 - ARREAR COUNT': student.sem2.arrearsCount,
-        'SEM 2 - TOTAL ARREAR': student.sem2.arrearsTotal,
-        'SEM 2 - TOT': student.sem2.total,
-        'SEM 2 - SGPA': student.sem2.sgpa,
-        'CGPA (Upto 2nd Sem)': student.overall.cgpa,
-        'TOT (Upto 2nd Sem)': student.overall.total,
-        'Total Arrear (Upto 2nd Sem)': student.overall.totalArrears,
-        'Signature': ''
-      })));
+      // Build dynamic headers based on actual semesters
+      const headers = {
+        'S.No': 'sno',
+        'SECTION': 'section',
+        'REG NO': 'registerNo',
+        'NAME': 'name'
+      };
+      
+      // Add semester columns dynamically
+      for (let sem = 1; sem <= maxSemesters; sem++) {
+        headers[`SEM ${sem} - ARREAR COUNT`] = `sem${sem}.arrearsCount`;
+        headers[`SEM ${sem} - TOTAL ARREAR`] = `sem${sem}.arrearsTotal`;
+        headers[`SEM ${sem} - TOT`] = `sem${sem}.total`;
+        headers[`SEM ${sem} - SGPA`] = `sem${sem}.sgpa`;
+      }
+      
+      // Add overall columns
+      headers['CGPA (Overall)'] = 'overall.cgpa';
+      headers['TOT (Overall)'] = 'overall.total';
+      headers['Total Arrear (Overall)'] = 'overall.totalArrears';
+      headers['Signature'] = 'signature';
+      
+      const ws = XLSX.utils.json_to_sheet(studentData.map(student => {
+        const row = {
+          'S.No': student.sno,
+          'SECTION': student.section,
+          'REG NO': student.registerNo,
+          'NAME': student.name
+        };
+        
+        // Add semester data dynamically
+        for (let sem = 1; sem <= maxSemesters; sem++) {
+          const semData = student[`sem${sem}`] || { arrearsCount: 0, arrearsTotal: 0, total: 0, sgpa: 0 };
+          row[`SEM ${sem} - ARREAR COUNT`] = semData.arrearsCount;
+          row[`SEM ${sem} - TOTAL ARREAR`] = semData.arrearsTotal;
+          row[`SEM ${sem} - TOT`] = semData.total;
+          row[`SEM ${sem} - SGPA`] = semData.sgpa;
+        }
+        
+        // Add overall data
+        row['CGPA (Overall)'] = student.overall.cgpa;
+        row['TOT (Overall)'] = student.overall.total;
+        row['Total Arrear (Overall)'] = student.overall.totalArrears;
+        row['Signature'] = '';
+        
+        return row;
+      }));
 
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Student Records');
@@ -261,6 +387,58 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleDeleteStudent = async (registerNo) => {
+    // Show confirmation dialog
+    const isConfirmed = window.confirm(
+      `Are you sure you want to delete the student with Register No: ${registerNo}? This action cannot be undone.`
+    );
+    
+    if (!isConfirmed) {
+      return;
+    }
+
+    try {
+      // Use dynamic API endpoint for mobile compatibility
+      const apiEndpoint = window.location.hostname === 'localhost' 
+        ? `http://localhost:5000/api/admin/students/${registerNo}`
+        : `${window.location.protocol}//${window.location.hostname}:5000/api/admin/students/${registerNo}`;
+      
+      console.log('Deleting student using endpoint:', apiEndpoint);
+      
+      const response = await fetch(apiEndpoint, {
+        method: 'DELETE'
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      console.log('Delete response:', data);
+      
+      toast({
+        title: 'Student Deleted',
+        description: `Student with Register No: ${registerNo} has been deleted successfully.`,
+        status: 'success',
+        duration: 3000,
+        isClosable: true,
+      });
+      
+      // Refresh the data
+      fetchStudents();
+      
+    } catch (error) {
+      console.error('Error deleting student:', error);
+      toast({
+        title: 'Delete Error',
+        description: `Failed to delete student: ${error.message}`,
+        status: 'error',
+        duration: 3000,
+        isClosable: true,
+      });
+    }
+  };
+
   if (loading) {
     return (
       <Box p={8}>
@@ -272,10 +450,21 @@ const AdminDashboard = () => {
   const stats = calculateStats();
 
   return (
-    <VStack spacing={6} p={6}>
-      <Heading size="2xl" textAlign="center" color="blue.600">
-        Admin Dashboard
-      </Heading>
+    <Box maxWidth="100vw" height="100vh" overflow="hidden">
+      <VStack spacing={6} p={6} height="100vh" overflow="hidden" align="stretch">
+      <HStack justify="space-between" w="100%">
+        <Heading size="2xl" color="blue.600">
+          Admin Dashboard
+        </Heading>
+        <Button 
+          onClick={handleLogout}
+          colorScheme="red" 
+          variant="solid"
+          leftIcon={<span>🚪</span>}
+        >
+          Logout
+        </Button>
+      </HStack>
 
       {/* Statistics Cards */}
       <Box display="grid" gridTemplateColumns="repeat(3, 1fr)" gap={4} mb={6}>
@@ -288,22 +477,33 @@ const AdminDashboard = () => {
         
         <Box p={4} borderRadius="8px" bg="white" boxShadow="0 2px 4px rgba(0,0,0,0.1)">
           <Text fontSize="lg" fontWeight="bold" color="green.600">
-            {stats.totalSemesters}
+            {stats.arrearHavingStudents}
           </Text>
-          <Text fontSize="sm" color="gray.600">Total Semesters</Text>
+          <Text fontSize="sm" color="gray.600">Arrear Having Students</Text>
         </Box>
         
         <Box p={4} borderRadius="8px" bg="white" boxShadow="0 2px 4px rgba(0,0,0,0.1)">
           <Text fontSize="lg" fontWeight="bold" color="purple.600">
-            {stats.avgCGPA.toFixed(2)}
+            {stats.highestCGPA.toFixed(2)}
           </Text>
-          <Text fontSize="sm" color="gray.600">Average CGPA</Text>
+          <Text fontSize="sm" color="gray.600">Highest CGPA</Text>
         </Box>
       </Box>
 
       {/* Students Table */}
-      <Box bg="white" borderRadius="8px" p={6} boxShadow="0 2px 4px rgba(0,0,0,0.1)">
-        <Heading size="lg" mb={4} color="gray.800">
+      <Box 
+        bg="white" 
+        borderRadius="8px" 
+        p={4} 
+        boxShadow="0 2px 4px rgba(0,0,0,0.1)"
+        flex={1}
+        display="flex"
+        flexDirection="column"
+        overflow="hidden"
+        height="calc(100vh - 320px)"
+        minHeight="400px"
+      >
+        <Heading size="md" mb={2} color="gray.800">
           Student Academic Records (Semester-wise)
         </Heading>
         
@@ -312,64 +512,175 @@ const AdminDashboard = () => {
             No student records found in the database.
           </Text>
         ) : (
-          <Box overflowX="auto">
-            <Table id="student-table" variant="simple" size="sm" minWidth="1200px">
-              <Thead>
-                <Tr>
-                  <Th rowSpan={2} textAlign="center">S.No</Th>
-                  <Th rowSpan={2} textAlign="center">SECTION</Th>
-                  <Th rowSpan={2} textAlign="center">REG NO</Th>
-                  <Th rowSpan={2} textAlign="center">NAME</Th>
-                  <Th colSpan={4} textAlign="center" bgColor="blue.50">SEM 1 (Credit-23)</Th>
-                  <Th colSpan={4} textAlign="center" bgColor="green.50">SEM 2 (Credit-24.5)</Th>
-                  <Th colSpan={3} textAlign="center" bgColor="purple.50">Overall (Upto 2nd Sem)</Th>
-                  <Th rowSpan={2} textAlign="center">Signature</Th>
+          <Box 
+            flex={1}
+            overflow="auto" 
+            maxWidth="100%"
+            borderWidth="1px" 
+            borderRadius="md"
+            borderColor="gray.200"
+            boxShadow="sm"
+            position="relative"
+            sx={{
+              '&::-webkit-scrollbar': {
+                width: '16px',
+                height: '16px',
+              },
+              '&::-webkit-scrollbar-track': {
+                background: '#f1f1f1',
+                borderRadius: '4px',
+              },
+              '&::-webkit-scrollbar-thumb': {
+                background: '#888',
+                borderRadius: '4px',
+              },
+              '&::-webkit-scrollbar-thumb:hover': {
+                background: '#555',
+              },
+              '&::-webkit-scrollbar-corner': {
+                background: '#f1f1f1',
+              },
+              scrollbarWidth: 'thin',
+              scrollbarColor: '#888 #f1f1f1',
+            }}
+          >
+            <Table id="student-table" variant="simple" size="sm" width="100%" minWidth="1600px" fontSize="xs" style={{ 
+              tableLayout: 'auto',
+              border: '2px solid #2D3748',
+              borderCollapse: 'separate',
+              borderSpacing: '0'
+            }}>
+              <Thead position="sticky" top={0} zIndex={1} bgColor="white" style={{ border: '2px solid #2D3748' }}>
+                <Tr style={{ border: '2px solid #2D3748' }}>
+                  <Th rowSpan={2} textAlign="center" p={2} fontSize="xs" width="50px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#EDF2F7',
+                    fontWeight: 'bold'
+                  }}>S.No</Th>
+                  <Th rowSpan={2} textAlign="center" p={2} fontSize="xs" width="80px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#EDF2F7',
+                    fontWeight: 'bold'
+                  }}>SECTION</Th>
+                  <Th rowSpan={2} textAlign="center" p={2} fontSize="xs" width="100px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#EDF2F7',
+                    fontWeight: 'bold'
+                  }}>REG NO</Th>
+                  <Th rowSpan={2} textAlign="center" p={2} fontSize="xs" width="150px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#EDF2F7',
+                    fontWeight: 'bold'
+                  }}>NAME</Th>
+                  {/* Dynamic semester columns */}
+                  {Array.from({ length: maxSemesters }, (_, i) => i + 1).map(semNum => (
+                    <Th key={semNum} colSpan={4} textAlign="center" bgColor={semNum % 2 === 0 ? "green.50" : "blue.50"} p={1} fontSize="xs" style={{ 
+                      border: '2px solid #2D3748',
+                      fontWeight: 'bold'
+                    }}>
+                      SEM {semNum}
+                    </Th>
+                  ))}
+                  <Th colSpan={3} textAlign="center" bgColor="purple.50" p={1} fontSize="xs" style={{ 
+                    border: '2px solid #2D3748',
+                    fontWeight: 'bold'
+                  }}>Overall</Th>
+                  <Th rowSpan={2} textAlign="center" p={2} fontSize="xs" width="100px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#EDF2F7',
+                    fontWeight: 'bold'
+                  }}>Signature</Th>
+                  <Th rowSpan={2} textAlign="center" p={2} fontSize="xs" width="80px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#EDF2F7',
+                    fontWeight: 'bold'
+                  }}>Actions</Th>
                 </Tr>
-                <Tr>
-                  {/* SEM 1 Columns */}
-                  <Th textAlign="center" fontSize="xs">ARREAR COUNT</Th>
-                  <Th textAlign="center" fontSize="xs">TOTAL ARREAR</Th>
-                  <Th textAlign="center" fontSize="xs">TOT</Th>
-                  <Th textAlign="center" fontSize="xs">SGPA</Th>
-                  {/* SEM 2 Columns */}
-                  <Th textAlign="center" fontSize="xs">ARREAR COUNT</Th>
-                  <Th textAlign="center" fontSize="xs">TOTAL ARREAR</Th>
-                  <Th textAlign="center" fontSize="xs">TOT</Th>
-                  <Th textAlign="center" fontSize="xs">SGPA</Th>
-                  {/* Overall Columns */}
-                  <Th textAlign="center" fontSize="xs">CGPA</Th>
-                  <Th textAlign="center" fontSize="xs">TOT</Th>
-                  <Th textAlign="center" fontSize="xs">Total Arrear</Th>
+                <Tr style={{ border: '2px solid #2D3748' }}>
+                  {/* Dynamic semester sub-columns */}
+                  {Array.from({ length: maxSemesters }, (_, i) => i + 1).map(semNum => (
+                    <React.Fragment key={`sub-${semNum}`}>
+                      <Th textAlign="center" fontSize="10px" p={1} width="80px" style={{ 
+                        border: '2px solid #2D3748',
+                        backgroundColor: '#F7FAFC',
+                        fontWeight: 'bold'
+                      }}>ARREAR COUNT</Th>
+                      <Th textAlign="center" fontSize="10px" p={1} width="80px" style={{ 
+                        border: '2px solid #2D3748',
+                        backgroundColor: '#F7FAFC',
+                        fontWeight: 'bold'
+                      }}>TOTAL ARREAR</Th>
+                      <Th textAlign="center" fontSize="10px" p={1} width="60px" style={{ 
+                        border: '2px solid #2D3748',
+                        backgroundColor: '#F7FAFC',
+                        fontWeight: 'bold'
+                      }}>TOT</Th>
+                      <Th textAlign="center" fontSize="10px" p={1} width="60px" style={{ 
+                        border: '2px solid #2D3748',
+                        backgroundColor: '#F7FAFC',
+                        fontWeight: 'bold'
+                      }}>SGPA</Th>
+                    </React.Fragment>
+                  ))}
+                  {/* Overall sub-columns */}
+                  <Th textAlign="center" fontSize="10px" p={1} width="60px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#F7FAFC',
+                    fontWeight: 'bold'
+                  }}>CGPA</Th>
+                  <Th textAlign="center" fontSize="10px" p={1} width="60px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#F7FAFC',
+                    fontWeight: 'bold'
+                  }}>TOT</Th>
+                  <Th textAlign="center" fontSize="10px" p={1} width="80px" style={{ 
+                    border: '2px solid #2D3748',
+                    backgroundColor: '#F7FAFC',
+                    fontWeight: 'bold'
+                  }}>Total Arrear</Th>
                 </Tr>
               </Thead>
-              <Tbody>
+              <Tbody style={{ border: '2px solid #2D3748' }}>
                 {studentData.map((student) => (
-                  <Tr key={student.registerNo}>
-                    <Td textAlign="center">{student.sno}</Td>
-                    <Td textAlign="center">{student.section}</Td>
-                    <Td textAlign="center">{student.registerNo}</Td>
-                    <Td>{student.name}</Td>
-                    {/* SEM 1 Data */}
-                    <Td textAlign="center">{student.sem1.arrearsCount}</Td>
-                    <Td textAlign="center">{student.sem1.arrearsTotal}</Td>
-                    <Td textAlign="center">{student.sem1.total}</Td>
-                    <Td textAlign="center">{student.sem1.sgpa.toFixed(2)}</Td>
-                    {/* SEM 2 Data */}
-                    <Td textAlign="center">{student.sem2.arrearsCount}</Td>
-                    <Td textAlign="center">{student.sem2.arrearsTotal}</Td>
-                    <Td textAlign="center">{student.sem2.total}</Td>
-                    <Td textAlign="center">{student.sem2.sgpa.toFixed(2)}</Td>
+                  <Tr key={student.registerNo} style={{ border: '2px solid #2D3748' }}>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.sno}</Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.section}</Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.registerNo}</Td>
+                    <Td p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.name}</Td>
+                    {/* Dynamic semester data */}
+                    {Array.from({ length: maxSemesters }, (_, i) => i + 1).map(semNum => {
+                      const semData = student[`sem${semNum}`] || { arrearsCount: 0, arrearsTotal: 0, total: 0, sgpa: 0 };
+                      return (
+                        <React.Fragment key={`data-${semNum}`}>
+                          <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{semData.arrearsCount}</Td>
+                          <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{semData.arrearsTotal}</Td>
+                          <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{semData.total}</Td>
+                          <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{semData.sgpa.toFixed(2)}</Td>
+                        </React.Fragment>
+                      );
+                    })}
                     {/* Overall Data */}
-                    <Td textAlign="center">{student.overall.cgpa.toFixed(2)}</Td>
-                    <Td textAlign="center">{student.overall.total}</Td>
-                    <Td textAlign="center">{student.overall.totalArrears}</Td>
-                    <Td textAlign="center"></Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.overall.cgpa.toFixed(2)}</Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.overall.total}</Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>{student.overall.totalArrears}</Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}></Td>
+                    <Td textAlign="center" p={1} fontSize="xs" style={{ border: '1px solid #CBD5E0' }}>
+                      <Button 
+                        size="xs" 
+                        colorScheme="red" 
+                        onClick={() => handleDeleteStudent(student.registerNo)}
+                      >
+                        Delete
+                      </Button>
+                    </Td>
                   </Tr>
                 ))}
               </Tbody>
             </Table>
           </Box>
         )}
+
+        </Box>
 
         <HStack spacing={4} mt={4}>
         <Button 
@@ -406,9 +717,8 @@ const AdminDashboard = () => {
           Export to PDF
         </Button>
       </HStack>
-      </Box>
-    </VStack>
+      </VStack>
+    </Box>
   );
-};
-
+}
 export default AdminDashboard;

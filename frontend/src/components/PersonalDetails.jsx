@@ -57,11 +57,15 @@ const PersonalDetails = () => {
           
           <FormControl isRequired>
             <FormLabel>Section</FormLabel>
-            <Input 
+            <Select 
               value={formData.section}
               onChange={(e) => setFormData({...formData, section: e.target.value})}
-              placeholder='Enter section (e.g., A, B, C)'
-            />
+              placeholder='Select section'
+            >
+              <option value='A'>Section A</option>
+              <option value='B'>Section B</option>
+              <option value='C'>Section C</option>
+            </Select>
           </FormControl>
           
           <FormControl isRequired>
